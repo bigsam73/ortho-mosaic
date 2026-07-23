@@ -1,0 +1,28 @@
+# 데이터 (대용량 정사영상 - 리포에 넣지 않음)
+data/uploads/*
+data/outputs/*
+!data/uploads/.gitkeep
+!data/outputs/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Numba 캐시
+*.nbi
+*.nbc
+
+# OS / 에디터
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# 로그/임시
+*.log
+*.tif
+*.tiff

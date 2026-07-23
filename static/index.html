@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>정사영상 모자이크 플랫폼</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI", "Malgun Gothic", sans-serif; }
+  #app { display: flex; height: 100vh; }
+  #map { flex: 1; }
+  #panel {
+    width: 340px; background: #1e1e2e; color: #e0e0e0;
+    padding: 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { font-size: 12px; color: #9aa0b0; margin-bottom: 6px; }
+  .card { background: #2a2a3c; border-radius: 8px; padding: 12px; }
+  .card h2 { font-size: 13px; margin: 0 0 8px; color: #b0b8d0; text-transform: uppercase; letter-spacing: .5px; }
+  label { font-size: 13px; display: block; margin: 8px 0 4px; }
+  input[type=file], select, input[type=number], input[type=color] {
+    width: 100%; padding: 6px; border-radius: 5px; border: 1px solid #444;
+    background: #1a1a28; color: #e0e0e0; font-size: 13px;
+  }
+  input[type=color] { height: 34px; padding: 2px; }
+  button {
+    width: 100%; padding: 10px; border: none; border-radius: 6px; cursor: pointer;
+    font-size: 14px; font-weight: 600; margin-top: 6px;
+  }
+  .btn-primary { background: #5865f2; color: white; }
+  .btn-primary:hover { background: #4752c4; }
+  .btn-primary:disabled { background: #444; cursor: not-allowed; }
+  .btn-ghost { background: #33334a; color: #ccc; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  #progress { height: 8px; background: #333; border-radius: 4px; overflow: hidden; display: none; }
+  #progressBar { height: 100%; width: 0%; background: #5865f2; transition: width .2s; }
+  #status { font-size: 12px; color: #9aa0b0; min-height: 16px; }
+  .meta { font-size: 12px; color: #9aa0b0; line-height: 1.6; }
+  .hidden { display: none !important; }
+  .toggle-row { display: flex; gap: 6px; }
+  .toggle-row button { margin-top: 0; font-size: 12px; padding: 6px; }
+  .toggle-row button.active { background: #5865f2; color: white; }
+
+  /* ---- 전체 화면 로딩 오버레이 ---- */
+  #overlay {
+    position: fixed; inset: 0; z-index: 9999;
+    background: rgba(15, 15, 25, 0.82); backdrop-filter: blur(3px);
+    display: none; align-items: center; justify-content: center;
+  }
+  #overlay.show { display: flex; }
+  .loader-box {
+    background: #23233a; border: 1px solid #3a3a55; border-radius: 14px;
+    padding: 34px 46px; text-align: center; min-width: 320px;
+    box-shadow: 0 12px 48px rgba(0,0,0,.5);
+  }
+  .spinner {
+    width: 56px; height: 56px; margin: 0 auto 20px;
+    border: 5px solid #3a3a55; border-top-color: #5865f2;
+    border-radius: 50%; animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #overlayTitle { font-size: 17px; font-weight: 700; color: #fff; margin-bottom: 8px; }
+  #overlaySub { font-size: 13px; color: #9aa0b0; margin-bottom: 16px; min-height: 18px; }
+  .ov-progress {
+    height: 10px; background: #1a1a28; border-radius: 6px; overflow: hidden;
+    display: none; margin-top: 6px;
+  }
+  .ov-progress.show { display: block; }
+  #overlayBar {
+    height: 100%; width: 0%; background: linear-gradient(90deg,#5865f2,#8b93ff);
+    transition: width .25s ease;
+  }
+  #overlayPct { font-size: 12px; color: #c0c4d8; margin-top: 8px; min-height: 14px; }
+
+  /* 타일 로딩 중 지도 우상단 배지 */
+  #tileLoading {
+    position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+    z-index: 1000; background: rgba(30,30,46,.92); color: #e0e0e0;
+    padding: 7px 16px; border-radius: 20px; font-size: 12px;
+    display: none; align-items: center; gap: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.4);
+  }
+  #tileLoading.show { display: flex; }
+  .mini-spin {
+    width: 14px; height: 14px; border: 2px solid #4a4a66;
+    border-top-color: #8b93ff; border-radius: 50%; animation: spin .8s linear infinite;
+  }
+</style>
+</head>
+<body>
+<!-- 전체 화면 로딩 오버레이 -->
+<div id="overlay">
+  <div class="loader-box">
+    <div class="spinner"></div>
+    <div id="overlayTitle">처리 중...</div>
+    <div id="overlaySub">잠시만 기다려 주세요.</div>
+    <div class="ov-progress" id="overlayProgress"><div id="overlayBar"></div></div>
+    <div id="overlayPct"></div>
+  </div>
+</div>
+
+<div id="app">
+  <div id="map">
+    <div id="tileLoading"><div class="mini-spin"></div><span id="tileLoadingText">정사영상 타일 로딩 중...</span></div>
+  </div>
+  <div id="panel">
+    <div>
+      <h1>정사영상 모자이크</h1>
+      <div class="sub">GeoTIFF/COG · 타일 단위 고속 처리</div>
+    </div>
+
+    <div class="card">
+      <h2>1. 정사영상 업로드</h2>
+      <input type="file" id="fileInput" accept=".tif,.tiff" />
+      <button class="btn-primary" id="uploadBtn">업로드</button>
+      <div id="meta" class="meta"></div>
+    </div>
+
+    <div class="card" id="drawCard" style="opacity:.5; pointer-events:none;">
+      <h2>2. 모자이크 영역 지정</h2>
+      <div class="sub">지도 우측 상단 도구로 사각형/폴리곤을 그리세요.</div>
+      <div id="shapeCount" class="meta">그린 영역: 0개</div>
+      <button class="btn-ghost" id="clearBtn">전체 지우기</button>
+    </div>
+
+    <div class="card" id="optCard" style="opacity:.5; pointer-events:none;">
+      <h2>3. 처리 방식</h2>
+      <label>모자이크 유형</label>
+      <div class="toggle-row" id="methodToggle">
+        <button data-m="blur" class="active">블러</button>
+        <button data-m="pixelate">픽셀화</button>
+        <button data-m="solid">단색</button>
+      </div>
+
+      <div id="opt-blur">
+        <label>블러 반경 (px): <span id="brVal">8</span></label>
+        <input type="range" id="blurRadius" min="1" max="40" value="8" style="width:100%">
+        <label>페더링 경계 (px)</label>
+        <input type="number" id="feather" value="4" min="0" max="50">
+      </div>
+      <div id="opt-pixelate" class="hidden">
+        <label>블록 크기 (px): <span id="pbVal">16</span></label>
+        <input type="range" id="pixelBlock" min="4" max="128" value="16" style="width:100%">
+      </div>
+      <div id="opt-solid" class="hidden">
+        <label>채우기 색상</label>
+        <input type="color" id="fillColor" value="#000000">
+      </div>
+    </div>
+
+    <div class="card" id="runCard" style="opacity:.5; pointer-events:none;">
+      <h2>4. 실행 & 저장</h2>
+      <button class="btn-primary" id="processBtn">모자이크 처리 시작</button>
+      <div id="progress"><div id="progressBar"></div></div>
+      <div id="status"></div>
+      <button class="btn-primary hidden" id="downloadBtn">결과 정사영상 다운로드</button>
+      <div class="row" id="viewToggle" style="margin-top:8px; display:none;">
+        <button class="btn-ghost active" data-src="original">원본 보기</button>
+        <button class="btn-ghost" data-src="processed">처리본 보기</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
