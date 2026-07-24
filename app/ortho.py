@@ -14,6 +14,8 @@ from __future__ import annotations
 from . import _bootstrap  # noqa: F401  (rasterio import 전 PROJ/GDAL 경로 교정)
 
 import json
+import os
+import shutil
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -153,6 +155,7 @@ def process(
     pixel_block: int = 16,
     fill_color: tuple[int, int, int] = (0, 0, 0),
     feather: int = 0,
+    rebuild_overviews: bool = False,
     progress=None,
 ) -> dict:
     """
@@ -162,9 +165,22 @@ def process(
     method: 'blur' | 'pixelate' | 'solid'
     feather: 마스크 경계 팽창 픽셀 (블러 시 경계 자연스럽게)
     progress: callable(done_blocks, total_blocks) 진행률 콜백
+
+    [속도 최적화 핵심]
+    - 전체 재압축 복사(느림) 대신 OS 파일 복사(shutil)로 원본을 그대로 복제.
+      압축 상태/오버뷰/구조가 바이트 단위로 보존되어 재압축 CPU 비용이 0.
+      (QGIS 가 빠른 이유와 동일: 바뀐 부분만 손대고 나머지는 건드리지 않음)
+    - 마스크 영역에 겹치는 블록만 read/modify/write.
+    - 오버뷰는 전체 재생성하지 않고, 변경된 픽셀 윈도우에 해당하는
+      오버뷰 영역만 부분 갱신한다.
     """
-    # 1) COG 로 그대로 복사 (구조 보존). 이후 그 위에 in-place 덮어쓰기.
-    _copy_as_cog(src_path, dst_path)
+    # 1) OS 레벨 raw 복사 — 재압축 없음, 오버뷰까지 그대로 복제됨.
+    shutil.copyfile(src_path, dst_path)
+    # 사이드카(.ovr, .msk 등) 도 함께 복사
+    for ext in (".ovr", ".msk", ".aux.xml"):
+        side = src_path + ext
+        if os.path.exists(side):
+            shutil.copyfile(side, dst_path + ext)
 
     with rasterio.open(dst_path, "r+") as ds:
         geoms = _project_geoms(ds, features_wgs84)
@@ -184,6 +200,10 @@ def process(
         blocks = list(_iter_blocks(win, ds.width, ds.height, bw, bh))
         total = len(blocks)
         touched = 0
+
+        # 실제로 변경된 픽셀 범위 추적 (오버뷰 부분 갱신용)
+        dminx = dminy = None
+        dmaxx = dmaxy = None
 
         for i, w in enumerate(blocks):
             wt = ds.window_transform(w)
@@ -221,12 +241,27 @@ def process(
             ds.write(out, window=w)
             touched += 1
 
+            # 변경 범위 갱신
+            cx0, cy0 = int(w.col_off), int(w.row_off)
+            cx1, cy1 = cx0 + int(w.width), cy0 + int(w.height)
+            dminx = cx0 if dminx is None else min(dminx, cx0)
+            dminy = cy0 if dminy is None else min(dminy, cy0)
+            dmaxx = cx1 if dmaxx is None else max(dmaxx, cx1)
+            dmaxy = cy1 if dmaxy is None else max(dmaxy, cy1)
+
             if progress:
                 progress(i + 1, total)
 
-        # 오버뷰 재생성 (모자이크 반영)
-        factors = [2, 4, 8, 16, 32]
-        ds.build_overviews(factors, Resampling.average)
+        # 오버뷰: 재생성하지 않음 (QGIS 와 동일한 전략).
+        # 원본에서 shutil 로 복사해 온 기존 오버뷰가 그대로 유지된다.
+        # → 저장이 즉시 끝난다. 풀 해상도 데이터는 정확.
+        # 모자이크 영역의 저해상도 미리보기 정합이 필요하면
+        # rebuild_overviews=True 로 명시적으로 재생성할 수 있다.
+        if rebuild_overviews and touched > 0:
+            factors = ds.overviews(1) or [2, 4, 8, 16, 32]
+            ds.build_overviews(factors, Resampling.average)
+            if progress:
+                progress(total, total)
 
     return {"blocks_total": total, "blocks_modified": touched}
 

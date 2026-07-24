@@ -123,6 +123,7 @@ class ProcessReq(BaseModel):
     pixel_block: int = 16
     fill_color: list[int] = [0, 0, 0]
     feather: int = 0
+    rebuild_overviews: bool = False   # True: 저해상도 미리보기 정합↑ / 저장 느림
 
 
 @app.post("/api/process")
@@ -149,6 +150,7 @@ def process(req: ProcessReq):
                 blur_radius=req.blur_radius, blur_passes=req.blur_passes,
                 pixel_block=req.pixel_block,
                 fill_color=tuple(req.fill_color), feather=req.feather,
+                rebuild_overviews=req.rebuild_overviews,
                 progress=prog,
             )
             rec["output"] = out_path

@@ -4,7 +4,11 @@ import time
 import urllib.request
 import uuid
 
-BASE = "http://127.0.0.1:8021"
+# 프록시 우회 (시스템 프록시/no_proxy 처리 이슈 회피)
+_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+urllib.request.install_opener(_opener)
+
+BASE = "http://127.0.0.1:8000"
 
 
 def post_multipart(url, filepath, field="file"):

@@ -221,6 +221,7 @@ document.getElementById("processBtn").onclick = async () => {
     pixel_block: +document.getElementById("pixelBlock").value,
     fill_color: hexToRgb(document.getElementById("fillColor").value),
     feather: +document.getElementById("feather").value,
+    rebuild_overviews: document.getElementById("rebuildOvr").checked,
   };
 
   setStatus("처리 시작...");

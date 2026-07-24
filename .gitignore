@@ -24,5 +24,8 @@ Thumbs.db
 
 # 로그/임시
 *.log
+srv_out.log
+srv_err.log
 *.tif
 *.tiff
+bench_save.py
