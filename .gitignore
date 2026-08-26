@@ -24,6 +24,7 @@ Thumbs.db
 
 # 로그/임시
 *.log
+*.err
 srv_out.log
 srv_err.log
 *.tif

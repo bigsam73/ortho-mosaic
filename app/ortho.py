@@ -186,36 +186,65 @@ def process(
         geoms = _project_geoms(ds, features_wgs84)
         gminx, gminy, gmaxx, gmaxy = _geoms_bounds(geoms)
 
-        # 처리 영역의 픽셀 윈도우 (약간 마진)
+        # 처리 영역의 픽셀 윈도우 (마스크 페더링 마진 포함)
         win = from_bounds(gminx, gminy, gmaxx, gmaxy, ds.transform)
-        margin = max(blur_radius, feather, pixel_block) + 2
+        margin = feather + 2
         win = Window(
             win.col_off - margin, win.row_off - margin,
             win.width + 2 * margin, win.height + 2 * margin,
         )
 
-        bh, bw = ds.block_shapes[0]
+        c_total = ds.count
         color = np.array(fill_color, dtype=np.uint8)
 
-        blocks = list(_iter_blocks(win, ds.width, ds.height, bw, bh))
-        total = len(blocks)
+        # ── 큰 반경/블록 대응: 처리 타일 크기와 halo(겹침)를 값에 맞춰 산정 ──
+        # halo = 블러 확산 범위(radius*passes) 또는 픽셀 블록 크기.
+        #   read 는 [유효영역 + halo] 를 읽어 커널을 적용하고,
+        #   write 는 halo 를 제외한 유효영역만 되쓴다 → 타일 경계 아티팩트 제거.
+        # 유효 타일 크기는 파일 블록(512) 이상이되, 픽셀블록/블러반경보다 충분히 크게.
+        bh0, bw0 = ds.block_shapes[0]
+        base = max(bh0, bw0, 512)
+        if method == "pixelate":
+            halo = int(pixel_block)
+            # 픽셀 셀이 유효영역에 여러 개 온전히 들어가도록 타일을 키움
+            core = max(base, int(pixel_block) * 4)
+        elif method == "blur":
+            halo = int(blur_radius) * int(blur_passes) + 1
+            core = max(base, halo * 2, 512)
+        else:  # solid
+            halo = 0
+            core = base
+
+        # 처리 영역을 유효(core) 타일 그리드로 분할
+        tiles_list = list(_iter_blocks(win, ds.width, ds.height, core, core))
+        total = len(tiles_list)
         touched = 0
 
         # 실제로 변경된 픽셀 범위 추적 (오버뷰 부분 갱신용)
         dminx = dminy = None
         dmaxx = dmaxy = None
 
-        for i, w in enumerate(blocks):
-            wt = ds.window_transform(w)
+        for i, cw in enumerate(tiles_list):
+            # 유효영역 (write 대상)
+            vx0, vy0 = int(cw.col_off), int(cw.row_off)
+            vx1, vy1 = vx0 + int(cw.width), vy0 + int(cw.height)
 
-            # 이 블록에 대한 마스크 래스터라이징
-            # geometry_mask: 도형 내부=False → invert=True 로 내부=True
+            # halo 를 붙인 read 영역 (파일 경계로 클램프)
+            rx0 = max(0, vx0 - halo)
+            ry0 = max(0, vy0 - halo)
+            rx1 = min(ds.width, vx1 + halo)
+            ry1 = min(ds.height, vy1 + halo)
+            rw = Window(rx0, ry0, rx1 - rx0, ry1 - ry0)
+            wt = ds.window_transform(rw)
+
+            # read 영역 전체에 대한 마스크 (halo 포함해야 블러/픽셀 평균이 정확)
             mask = geometry_mask(
-                geoms, out_shape=(int(w.height), int(w.width)),
+                geoms, out_shape=(int(rw.height), int(rw.width)),
                 transform=wt, invert=True, all_touched=True,
             ).astype(np.uint8)
 
-            if not mask.any():
+            # 유효영역 안에 마스크가 없으면 이 타일은 건너뜀
+            if not mask[vy0 - ry0:vy1 - ry0, vx0 - rx0:vx1 - rx0].any():
                 if progress:
                     progress(i + 1, total)
                 continue
@@ -223,8 +252,7 @@ def process(
             if feather > 0:
                 mask = _dilate(mask, feather)
 
-            # 블록 읽기: (C,H,W) → (H,W,C)
-            arr = ds.read(window=w)  # (C,H,W)
+            arr = ds.read(window=rw)                      # (C,H,W)
             img = np.ascontiguousarray(np.transpose(arr, (1, 2, 0)))  # (H,W,C)
             c = img.shape[2]
 
@@ -232,22 +260,22 @@ def process(
                 col = color[:c] if len(color) >= c else np.resize(color, c)
                 kernels.fill_solid(img, mask, np.ascontiguousarray(col))
             elif method == "pixelate":
-                kernels.pixelate(img, mask, int(pixel_block))
+                # 전역 그리드 정렬: read 영역 좌상단(rx0,ry0)을 오프셋으로 전달
+                kernels.pixelate(img, mask, int(pixel_block), ry0, rx0)
             else:  # blur
                 kernels.box_blur(img, mask, int(blur_radius), int(blur_passes))
 
-            # 되쓰기: (H,W,C) → (C,H,W)
-            out = np.ascontiguousarray(np.transpose(img, (2, 0, 1)))
-            ds.write(out, window=w)
+            # halo 를 제외한 유효영역만 잘라 되쓰기
+            sub = img[vy0 - ry0:vy1 - ry0, vx0 - rx0:vx1 - rx0, :]
+            out = np.ascontiguousarray(np.transpose(sub, (2, 0, 1)))
+            ds.write(out, window=cw)
             touched += 1
 
             # 변경 범위 갱신
-            cx0, cy0 = int(w.col_off), int(w.row_off)
-            cx1, cy1 = cx0 + int(w.width), cy0 + int(w.height)
-            dminx = cx0 if dminx is None else min(dminx, cx0)
-            dminy = cy0 if dminy is None else min(dminy, cy0)
-            dmaxx = cx1 if dmaxx is None else max(dmaxx, cx1)
-            dmaxy = cy1 if dmaxy is None else max(dmaxy, cy1)
+            dminx = vx0 if dminx is None else min(dminx, vx0)
+            dminy = vy0 if dminy is None else min(dminy, vy0)
+            dmaxx = vx1 if dmaxx is None else max(dmaxx, vx1)
+            dmaxy = vy1 if dmaxy is None else max(dmaxy, vy1)
 
             if progress:
                 progress(i + 1, total)

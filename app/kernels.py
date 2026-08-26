@@ -37,29 +37,45 @@ def fill_solid(img, mask, color):
 # 2) 픽셀화 (mosaic / pixelate) - 블록 평균으로 뭉개기
 # ---------------------------------------------------------------------------
 @njit(parallel=True, fastmath=True, nogil=True)
-def pixelate(img, mask, block):
+def pixelate(img, mask, block, off_y=0, off_x=0):
     """
     img:   (H, W, C) uint8, in-place
     mask:  (H, W)    uint8
     block: 픽셀 블록 크기 (예: 16 -> 16x16 블록 평균)
+    off_y, off_x: 전역 픽셀 그리드 정렬 오프셋 (이 타일의 전역 좌상단 좌표).
+                  타일(블록) 단위로 나눠 처리해도 픽셀화 격자가 전역 좌표계에
+                  정렬되어 타일 경계에서 얼룩(블록 어긋남)이 생기지 않는다.
 
-    블록 단위로 순회. 블록 안에 mask!=0 픽셀이 하나라도 있으면
-    그 블록 전체 평균색으로 (마스크된 픽셀만) 대체.
+    전역 그리드 셀 경계로 순회. 각 셀 안에 mask!=0 픽셀이 하나라도 있으면
+    그 셀 전체 평균색으로 (마스크된 픽셀만) 대체.
     """
     h, w, c = img.shape
-    nby = (h + block - 1) // block
-    nbx = (w + block - 1) // block
+
+    # 전역 그리드에 정렬된 첫 셀의 시작 좌표(로컬 기준, 음수 가능)
+    gy0 = -((off_y % block + block) % block)
+    gx0 = -((off_x % block + block) % block)
+
+    nby = (h - gy0 + block - 1) // block
+    nbx = (w - gx0 + block - 1) // block
 
     for by in prange(nby):
-        y0 = by * block
+        y0 = gy0 + by * block
         y1 = y0 + block
+        if y0 < 0:
+            y0 = 0
         if y1 > h:
             y1 = h
+        if y0 >= y1:
+            continue
         for bx in range(nbx):
-            x0 = bx * block
+            x0 = gx0 + bx * block
             x1 = x0 + block
+            if x0 < 0:
+                x0 = 0
             if x1 > w:
                 x1 = w
+            if x0 >= x1:
+                continue
 
             acc = np.zeros(c, dtype=np.float64)
             n = 0
@@ -183,5 +199,5 @@ def warmup():
     dummy = np.zeros((4, 4, 3), dtype=np.uint8)
     m = np.ones((4, 4), dtype=np.uint8)
     fill_solid(dummy.copy(), m, np.array([0, 0, 0], dtype=np.uint8))
-    pixelate(dummy.copy(), m, 2)
+    pixelate(dummy.copy(), m, 2, 0, 0)
     box_blur(dummy.copy(), m, 1, passes=1)
